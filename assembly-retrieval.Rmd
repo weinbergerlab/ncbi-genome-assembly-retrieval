@@ -9,7 +9,6 @@ knitr::opts_chunk$set(echo = TRUE)
 library(rentrez)
 library(dplyr)
 library(stringr)
-library(rsync)
 library(XML)
 library(knitrProgressBar)
 ```
@@ -66,12 +65,10 @@ No matter how you formulated your search, your next step is to fetch metadata fo
 assemblyMetadata = entrez_fetch(db="assembly", web_history=results$web_history, rettype="docsum", retmode="xml") %>% xmlParse(asText=TRUE)
 ```
 
-The details of how to extract information from XML are beyond the scope here, but the important piece of metadata that we want is the FTP location on GenBank from which each assembly can be downloaded. These locations are given as `ftp://` paths, but the [NCBI batch download instructions](https://www.ncbi.nlm.nih.gov/genome/doc/ftpfaq/#protocols) recommend replacing that with `rsync://` for best results:
+The details of how to extract information from XML are beyond the scope here, but the important piece of metadata that we want is the FTP location on GenBank from which each assembly can be downloaded. 
 
 ```{r}
-downloadLocations = assemblyMetadata %>% xpathSApply("//FtpPath_GenBank", xmlValue) %>% lapply(function(location) {
-  return(location %>% str_replace(fixed("ftp://"), "rsync://"))
-})
+downloadLocations = assemblyMetadata %>% xpathSApply("//FtpPath_GenBank", xmlValue)
 ```
 
 ## Third, download assembly data
@@ -92,12 +89,10 @@ for (downloadLocation in downloadLocations) {
   downloadLocation = downloadLocation %>% str_replace("/+$", "")
   for (file in wantedFiles) {
     # The name of the file = the last part of the download location + the type of file
-    remoteFile = sprintf("%s/%s_%s", downloadLocation, downloadLocation %>% str_extract("[^/]+$"), file)
-    rsynccli(
-      remoteFile, 
-      destDir,
-      args="-rltxq"
-    )
+    filename = sprintf("%s_%s", downloadLocation %>% str_extract("[^/]+$"), file)
+    source = sprintf("%s/%s", downloadLocation, filename)
+    destination = sprintf("%s/%s", destDir, filename)
+    download.file(source, destination, quiet=TRUE)
   }
   update_progress(pb)
 }
