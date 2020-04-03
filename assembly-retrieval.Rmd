@@ -68,7 +68,12 @@ assemblyMetadata = entrez_fetch(db="assembly", web_history=results$web_history, 
 The details of how to extract information from XML are beyond the scope here, but the important piece of metadata that we want is the FTP location on GenBank from which each assembly can be downloaded. 
 
 ```{r}
-downloadLocations = assemblyMetadata %>% xpathSApply("//FtpPath_GenBank", xmlValue)
+# name and download location for each assembly
+# Training slashes are stripped from download locations
+assemblyInfo = data.frame(
+  name=assemblyMetadata %>% xpathSApply("//AssemblyName", xmlValue),
+  download = assemblyMetadata %>% xpathSApply("//FtpPath_GenBank", xmlValue) %>% str_replace("/+$", "")
+)
 ```
 
 ## Third, download assembly data
@@ -79,21 +84,36 @@ Finally, now that you have a list of download locations, you need to actually do
 # This is where the downloaded files will go
 destDir = "assemblies"
 # This is which files we care about for downloading
-wantedFiles = c("genomic.fna.gz")
+wantedFiles = list(fasta="genomic.fna.gz")
 
 dir.create(destDir, showWarnings=FALSE)
 
-pb <- progress_estimated(n=length(downloadLocations))
-for (downloadLocation in downloadLocations) {
-  # We have to remove trailing slashes from downloadLocation in order for rsync to behave correctly
-  downloadLocation = downloadLocation %>% str_replace("/+$", "")
-  for (file in wantedFiles) {
-    # The name of the file = the last part of the download location + the type of file
-    filename = sprintf("%s_%s", downloadLocation %>% str_extract("[^/]+$"), file)
-    source = sprintf("%s/%s", downloadLocation, filename)
-    destination = sprintf("%s/%s", destDir, filename)
-    download.file(source, destination, quiet=TRUE)
-  }
+# Build inventory of all files to download for a single assembly, as a data frame containing assembly name, file type, file download source (remote), and file download destination (local)
+downloadInfo = function(assembly) {
+  return(
+    data.frame(type=names(wantedFiles)) %>%
+      mutate(
+        # The name of the file = the last part of the download location + the type of file
+        filename=sprintf("%s_%s", assembly$download %>% str_extract("[^/]+$"), wantedFiles[type]),
+        source=sprintf("%s/%s", assembly$download, filename),
+        destination=sprintf("%s/%s", destDir, filename)
+      ) %>%
+      select(-filename)
+  )
+}
+# Build download info for all assemblies and all files
+downloads = assemblyInfo %>% group_by(name) %>% do(downloadInfo(.)) %>% ungroup()
+
+# Download everything
+pb <- progress_estimated(n=length(downloads))
+for (idx in 1:nrow(downloads)) {
+  download.file(downloads$source[idx], downloads$destination[idx], quiet=TRUE)
   update_progress(pb)
 }
+```
+
+You can look at the `downloads` data to see what went where:
+
+```{r}
+knitr::kable(downloads)
 ```
