@@ -1,0 +1,104 @@
+---
+title: "NCBI Genome Assembly Retrieval"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+renv::restore(confirm=FALSE)
+knitr::opts_chunk$set(echo = TRUE)
+library(rentrez)
+library(dplyr)
+library(stringr)
+library(rsync)
+library(XML)
+library(knitrProgressBar)
+```
+
+# Downloading NCBI assemblies from code
+
+## First, formulate your search
+
+You're going to need an NCBI search. You can make one in two different ways:
+
+1. Set it up on [NCBI assembly search page](https://www.ncbi.nlm.nih.gov/assembly) and then copy-and-paste the query strin, which looks something like `"Streptococcus pneumoniae"[Organism]`. This is the easier way, and it's good if what you want to download can be easily selected in the NCBI search interface
+2. Build up the search query using code. This is more complicated, but it's the best approach if your needs are more complex than what's readily available in the NCBI search interface.
+
+You can then use the `rentrez` package to perform your search. 
+
+For example, if you wanted to look for all *Streptococcus pneumoniae* assemblies, this is how you can look them up:
+
+```{r}
+query = '"Streptococcus pneumoniae"[Organism]'
+results = entrez_search("assembly", term=query, use_history=TRUE)
+
+print(results)
+```
+
+You could also look up *Streptococcus pneumoniae* assemblies by the taxonomy ID, which is 1313:
+
+```{r}
+query = '1313[TXID]'
+results = entrez_search("assembly", term=query, use_history=TRUE)
+
+print(results)
+```
+
+A good example of building up the search query using code would be if you need to download a long list of specific assemblies by their ID. 
+
+```{r}
+# List of IDs we want to look for
+ids = c("9789_3#9", "9789_3#8", "9789_3#7", "9789_3#4", "9789_3#19", "9789_3#16", "9789_3#11", "9789_3#1", "9789_2#91", "9789_2#90", "9789_2#9", "9789_2#88", "9789_2#86", "9789_2#84", "9789_2#83", "9789_2#82", "9789_2#8", "9789_2#7", "9789_2#61", "9789_2#60", "9789_2#6", "9789_2#58", "9789_2#42", "9789_2#41", "9789_2#39")
+
+# Construct the query in the form "id"[NAME] OR "id"[NAME] OR …
+query = ids %>% lapply(function(id) {
+  return(sprintf('"%s"[NAME]', id))
+}) %>% paste0(collapse=" OR ")
+
+results = entrez_search("assembly", term=query, use_history=TRUE)
+print(results)
+```
+
+## Second, fetch search result metadata
+
+No matter how you formulated your search, your next step is to fetch metadata for your assemblies from NCBI. The metadata is returned in XML format, which `xmlParse` can parse for you:
+
+```{r}
+assemblyMetadata = entrez_fetch(db="assembly", web_history=results$web_history, rettype="docsum", retmode="xml") %>% xmlParse(asText=TRUE)
+```
+
+The details of how to extract information from XML are beyond the scope here, but the important piece of metadata that we want is the FTP location on GenBank from which each assembly can be downloaded. These locations are given as `ftp://` paths, but the [NCBI batch download instructions](https://www.ncbi.nlm.nih.gov/genome/doc/ftpfaq/#protocols) recommend replacing that with `rsync://` for best results:
+
+```{r}
+downloadLocations = assemblyMetadata %>% xpathSApply("//FtpPath_GenBank", xmlValue) %>% lapply(function(location) {
+  return(location %>% str_replace(fixed("ftp://"), "rsync://"))
+})
+```
+
+## Third, download assembly data
+
+Finally, now that you have a list of download locations, you need to actually download those files. 
+
+```{r message=FALSE}
+# This is where the downloaded files will go
+destDir = "assemblies"
+# This is which files we care about for downloading
+wantedFiles = c("genomic.fna.gz")
+
+dir.create(destDir, showWarnings=FALSE)
+
+pb <- progress_estimated(n=length(downloadLocations))
+for (downloadLocation in downloadLocations) {
+  # We have to remove trailing slashes from downloadLocation in order for rsync to behave correctly
+  downloadLocation = downloadLocation %>% str_replace("/+$", "")
+  for (file in wantedFiles) {
+    # The name of the file = the last part of the download location + the type of file
+    remoteFile = sprintf("%s/%s_%s", downloadLocation, downloadLocation %>% str_extract("[^/]+$"), file)
+    rsynccli(
+      remoteFile, 
+      destDir,
+      args="-rltxq"
+    )
+  }
+  update_progress(pb)
+}
+```
